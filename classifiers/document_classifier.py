@@ -28,9 +28,13 @@ def classify_page(page_text):
     page_type = "OTHER"
     evidence_tags = []
 
+    # The ACORD logo/footer is often far down in the reading order, so
+    # "ACORD" is looked for on the whole page. Checking the certificate
+    # title first also stops the certificate's own notice ("...in lieu of
+    # such endorsement(s)") from making it look like an endorsement.
     if (
         "CERTIFICATE OF LIABILITY INSURANCE" in header
-        and "ACORD" in header
+        and "ACORD" in text
     ):
         page_type = "ACORD_25"
 

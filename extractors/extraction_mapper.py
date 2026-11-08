@@ -1,4 +1,12 @@
 import re
+from collections import Counter
+from datetime import date
+
+from extractors.acord_layout import extract_acord_layout
+from reference.endorsement_chart import (
+    lookup_form,
+    normalize_form_number,
+)
 
 
 # =========================================================
@@ -172,6 +180,54 @@ def normalize_money(value):
     return digits or None
 
 
+DATE_PATTERN = r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}"
+
+
+def normalize_date(value):
+    """
+    Converts MM/DD/YYYY, MM/DD/YY, MM-DD-YYYY to ISO "YYYY-MM-DD".
+
+    Returns None for anything that is not a real calendar date
+    (for example the XX/XX/XX placeholders on blank forms), so later
+    steps can compare dates and detect expired policies.
+    """
+
+    if not value:
+        return None
+
+    match = re.fullmatch(
+        r"(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})",
+        str(value).strip()
+    )
+
+    if not match:
+        return None
+
+    month, day, year = (int(part) for part in match.groups())
+
+    if year < 100:
+        year += 2000
+
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def find_dates(text):
+    """Returns every valid date in the text, normalized to ISO."""
+
+    dates = []
+
+    for raw in re.findall(DATE_PATTERN, text or ""):
+        normalized = normalize_date(raw)
+
+        if normalized:
+            dates.append(normalized)
+
+    return dates
+
+
 def looks_like_policy_number(value):
     """
     Applies conservative checks so dates, dollar amounts,
@@ -282,6 +338,11 @@ def find_policy_number_in_section(section_lines):
     """
 
     for line in section_lines:
+        # The ADDL INSD / SUBR WVD checkbox marks ("X") often share the
+        # policy-number line: "X X K15715". Left in place they break the
+        # policy-number match used by association.
+        line = re.sub(r"^(?:X\s+)+", "", line.strip())
+
         if looks_like_policy_number(line):
             return clean_value(line)
 
@@ -297,11 +358,7 @@ def find_date_pair_in_section(section_lines):
     dates = []
 
     for line in section_lines:
-        for match in re.findall(
-            r"\d{1,2}/\d{1,2}/\d{2,4}",
-            line
-        ):
-            dates.append(match)
+        dates.extend(find_dates(line))
 
     if len(dates) >= 2:
         return {
@@ -409,8 +466,8 @@ def extract_policy_period(text):
 
     if match:
         return {
-            "effective_date": match.group(1),
-            "expiration_date": match.group(2),
+            "effective_date": normalize_date(match.group(1)),
+            "expiration_date": normalize_date(match.group(2)),
         }
 
     return {
@@ -427,7 +484,157 @@ def extract_endorsement_effective_date(text):
         re.IGNORECASE
     )
 
-    return match.group(1) if match else None
+    return normalize_date(match.group(1)) if match else None
+
+
+# ---------------------------------------------------------
+# Endorsement form numbers
+# ---------------------------------------------------------
+
+# Letter-prefixed numbers, with or without an edition date:
+# CG 20 10 07 04, CA 99 48, WC 00 03 13, HG 00 01 09 16,
+# CSGA 435 11 08, ENV-3101, CG D2 46 08 05
+PREFIXED_FORM_PATTERN = re.compile(
+    r"\b([A-Z]{2,5})[ -]?"
+    r"([A-Z]?\d[0-9A-Z]{0,9}(?:[ -](?:[A-Z]\d|\d{2,3})){0,4})"
+    r"(?:\s*\((\d{1,2})\s?[/-]\s?(\d{2,4})\))?"
+)
+
+# Numbers followed by a bracketed edition date:
+# "U-GL-1081-B CW (04/13)", "97837 (4/08)", "CNA74879XX (1-15)"
+EDITION_FORM_PATTERN = re.compile(
+    r"\b([A-Z0-9]{1,12}(?:-[A-Z0-9]{1,6}){0,4}(?: [A-Z]{2})?)"
+    r"\s*\((\d{1,2})\s?[/-]\s?(\d{2,4})\)"
+)
+
+# Two-letter state + ZIP code ("SD 57709") is an address, not a form.
+STATE_ZIP_PATTERN = re.compile(r"^[A-Z]{2} ?\d{5}$")
+
+
+def _looks_like_form_number(candidate):
+    digits = sum(character.isdigit() for character in candidate)
+
+    if digits < 4:
+        return False
+
+    if STATE_ZIP_PATTERN.match(candidate.split(" (")[0]):
+        return False
+
+    return True
+
+
+def extract_form_numbers(text):
+    """
+    Finds endorsement form numbers on a page.
+
+    Form numbers are the most reliable signal of what an endorsement
+    does (CG 20 10 = AI ongoing operations, CG 20 37 = AI completed
+    operations, CG 24 04 = waiver of subrogation). They usually appear in
+    the page footer, so the number that repeats most often comes first.
+
+    This returns candidates; R&O's chart lookup decides which are real.
+    Policy numbers can look similar and may appear in the list.
+    """
+
+    upper = (text or "").upper()
+    upper = upper.replace("‐", "-").replace("‑", "-")
+    upper = upper.replace("\xa0", " ")
+    found = []
+
+    for match in PREFIXED_FORM_PATTERN.finditer(upper):
+        prefix, body, month, year = match.groups()
+        candidate = f"{prefix} {body}".strip()
+
+        if month:
+            candidate += f" ({month}/{year})"
+
+        found.append(candidate)
+
+    for match in EDITION_FORM_PATTERN.finditer(upper):
+        number = match.group(1).strip()
+        found.append(f"{number} ({match.group(2)}/{match.group(3)})")
+
+    found = [item for item in found if _looks_like_form_number(item)]
+
+    # Drop numbers that are only a prefix of a longer number found
+    # (e.g. "CG 20 10" when "CG 20 10 07 04" is present).
+    keys = [normalize_form_number(item) for item in found]
+    counts = Counter(keys)
+    ordered = []
+    seen = set()
+
+    for item, key in sorted(
+        zip(found, keys),
+        key=lambda pair: -counts[pair[1]]
+    ):
+        if key in seen:
+            continue
+
+        if any(
+            other != key and other.startswith(key)
+            for other in keys
+        ):
+            continue
+
+        seen.add(key)
+        ordered.append(item)
+
+    return ordered
+
+
+def lookup_form_numbers(form_numbers):
+    """
+    Looks each form number up in R&O's Additional Insured chart.
+    Returns only the forms the chart knows about.
+    """
+
+    matches = []
+
+    for form_number in form_numbers:
+        entry = lookup_form(form_number)
+
+        if entry:
+            matches.append({
+                "extracted_form_number": form_number,
+                **entry
+            })
+
+    return matches
+
+
+def find_primary_form_number(text, form_numbers):
+    """
+    Picks the form number that identifies THIS endorsement.
+
+    Endorsement wording often cites other forms ("no broader than
+    CG 20 10 11 85"), so a cited form must not be credited as evidence.
+    The page's own number is printed in the header or footer, so a
+    candidate found in the first or last lines wins; repetition
+    (the order of form_numbers) breaks ties.
+    """
+
+    if not form_numbers:
+        return None
+
+    lines = normalize_lines((text or "").upper())
+
+    # Footer first (ISO prints "CG 20 10 07 04 © ISO" at the bottom),
+    # then the header, then the most repeated number.
+    zones = [
+        normalize_form_number(" ".join(lines[-1:])),
+        normalize_form_number(" ".join(lines[-3:])),
+        normalize_form_number(" ".join(lines[-8:])),
+        normalize_form_number(" ".join(lines[:6])),
+    ]
+
+    for zone in zones:
+        for form_number in form_numbers:
+            key = normalize_form_number(form_number.split(" (")[0])
+
+            if key and key in zone:
+                return form_number
+
+    return form_numbers[0]
 
 
 def extract_endorsement_carrier(text):
@@ -453,6 +660,11 @@ def extract_endorsement_carrier(text):
 
 def build_endorsement_schema(text, evidence_tags=None):
     policy_period = extract_policy_period(text)
+    form_numbers = extract_form_numbers(text)
+    primary_form = find_primary_form_number(text, form_numbers)
+    primary_matches = lookup_form_numbers(
+        [primary_form] if primary_form else []
+    )
 
     return {
         "document_type": "ENDORSEMENT",
@@ -470,6 +682,12 @@ def build_endorsement_schema(text, evidence_tags=None):
             extract_endorsement_number(text),
         "endorsement_effective_date":
             extract_endorsement_effective_date(text),
+        # The endorsement's own form number and R&O's chart entry for it.
+        "form_number": primary_form,
+        "ro_chart_entry":
+            primary_matches[0] if primary_matches else None,
+        # Every form number seen, including forms the wording only cites.
+        "form_numbers_on_page": form_numbers,
     }
 
 
@@ -617,6 +835,125 @@ def extract_acord_certificate_holder(text):
         return None
 
     return holder
+
+
+def extract_certificate_date(text):
+    """
+    The ACORD 25 issue date sits beside the "DATE (MM/DD/YYYY)" label.
+    It is when the broker issued the certificate, not a policy date.
+    """
+
+    lines = normalize_lines(text)
+
+    label_index = find_line_containing(lines, "DATE (MM/DD/YYYY)")
+
+    if label_index is None:
+        return None
+
+    # Azure sometimes places the title line between the label and value.
+    for line in lines[label_index:label_index + 4]:
+        dates = find_dates(line)
+
+        if dates:
+            return dates[0]
+
+    return None
+
+
+# R&O's certificate-holder address per the Copilot reviewer
+# instructions and "Insurance Requirements_New MSA's 4.10.24".
+RO_HOLDER_STREET = re.compile(r"\b933\s+WALL\s+(AVENUE|AVE)\b")
+RO_HOLDER_CITY = re.compile(r"\bOGDEN\b[\s,]*\b(UT|UTAH)\b[\s,]*84404\b")
+RO_HOLDER_NAME = re.compile(r"\bR\s*&\s*O\s+CONSTRUCTION\b")
+
+
+def check_ro_certificate_holder(holder_text):
+    """
+    Compares extracted certificate-holder text with R&O's address.
+
+    Returns "MATCH", "MISMATCH" or None (holder not extracted).
+    Abbreviations, "Suite 2"/"Ste 2" and missing commas are accepted.
+    """
+
+    if not holder_text:
+        return None
+
+    text = re.sub(r"\s+", " ", holder_text.upper())
+
+    if (
+        RO_HOLDER_NAME.search(text)
+        and RO_HOLDER_STREET.search(text)
+        and RO_HOLDER_CITY.search(text)
+    ):
+        return "MATCH"
+
+    return "MISMATCH"
+
+
+def extract_description_of_operations(text):
+    """
+    Free-text block where brokers describe additional insureds,
+    projects and "all jobs" wording. Kept as evidence only: per R&O's
+    guide, a statement here never replaces an endorsement.
+    """
+
+    lines = normalize_lines(text)
+
+    start = find_line_containing(lines, "DESCRIPTION OF OPERATIONS")
+
+    if start is None:
+        return None
+
+    values = []
+
+    for line in lines[start + 1:start + 15]:
+        upper = line.upper()
+
+        if (
+            "CERTIFICATE HOLDER" in upper
+            or upper.startswith("CANCELLATION")
+        ):
+            break
+
+        if "ACORD 101" in upper and "ATTACH" in upper:
+            continue
+
+        values.append(line)
+
+    return clean_value("\n".join(values))
+
+
+def find_named_projects(description):
+    """
+    Flags wording that names a specific project/owner, which R&O's
+    instructions mark as "User Confirmation Required", versus blanket
+    "all jobs / all projects / as required by written contract" wording.
+    """
+
+    if not description:
+        return {
+            "blanket_wording": False,
+            "names_specific_project": False,
+        }
+
+    upper = description.upper()
+
+    blanket = bool(re.search(
+        r"ALL (JOBS|PROJECTS|OPERATIONS|LOCATIONS)"
+        r"|(REQUIRED|AGREED) (BY|IN) (A )?WRITTEN (CONTRACT|AGREEMENT)"
+        r"|WHERE REQUIRED BY (WRITTEN )?CONTRACT",
+        upper
+    ))
+
+    specific = bool(re.search(
+        r"\b(PROJECT|JOB|RE:|LOCATION)\s*(NAME|#|NO\.?|:)",
+        upper
+    ))
+
+    return {
+        "blanket_wording": blanket,
+        "names_specific_project": specific,
+    }
 
 
 def extract_acord_coverages(text):
@@ -770,20 +1107,67 @@ def extract_acord_coverages(text):
     }
 
 
-def build_acord25_schema(text, evidence_tags=None):
+def merge_layout_coverages(text_coverages, layout_coverages):
+    """
+    Position-based values win; text-based values fill any gaps.
+    Dates from the layout reader are normalized to ISO here.
+    """
+
+    merged = {}
+
+    for name in set(text_coverages) | set(layout_coverages):
+        coverage = dict(text_coverages.get(name) or {})
+
+        for field, value in (layout_coverages.get(name) or {}).items():
+            if field in ("effective_date", "expiration_date"):
+                value = normalize_date(value)
+
+            if value is not None or field not in coverage:
+                coverage[field] = value
+
+        merged[name] = coverage
+
+    return merged
+
+
+def build_acord25_schema(text, evidence_tags=None, page=None):
+    layout = extract_acord_layout(page) if page is not None else None
+
+    certificate_holder = (
+        (layout or {}).get("certificate_holder")
+        or extract_acord_certificate_holder(text)
+    )
+    description = extract_description_of_operations(text)
+
+    coverages = extract_acord_coverages(text)
+    insurers = extract_acord_insurers(text)
+
+    if layout:
+        coverages = merge_layout_coverages(coverages, layout["coverages"])
+        insurers = {**insurers, **layout["insurers"]}
+
     return {
         "document_type": "ACORD_25",
+        # Tags found on the certificate are statements, not proof.
+        # They are kept for the report but the rules ignore them.
         "evidence_tags": evidence_tags or [],
+        "certificate_date":
+            extract_certificate_date(text),
         "named_insured":
             extract_acord_named_insured(text),
         "producer":
             extract_acord_producer(text),
-        "insurers":
-            extract_acord_insurers(text),
-        "certificate_holder":
-            extract_acord_certificate_holder(text),
-        "coverages":
-            extract_acord_coverages(text),
+        "insurers": insurers,
+        "certificate_holder": certificate_holder,
+        "certificate_holder_check":
+            check_ro_certificate_holder(certificate_holder),
+        "description_of_operations": description,
+        "project_wording":
+            find_named_projects(description),
+        "form_numbers_mentioned":
+            extract_form_numbers(description or ""),
+        "coverages": coverages,
+        "extraction_method": "layout" if layout else "text",
     }
 
 
@@ -806,12 +1190,14 @@ def build_acord101_schema(text, evidence_tags=None):
 def build_document_schema(
     document_type,
     text,
-    evidence_tags=None
+    evidence_tags=None,
+    page=None
 ):
     if document_type == "ACORD_25":
         return build_acord25_schema(
             text,
-            evidence_tags
+            evidence_tags,
+            page=page
         )
 
     if document_type == "ACORD_101":

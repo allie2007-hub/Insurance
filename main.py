@@ -1,3 +1,5 @@
+import os
+import time
 from pathlib import Path
 
 from azure.ai.documentintelligence import (
@@ -35,8 +37,19 @@ from Submission.multi_document_processor import (
 
 
 # Azure Document Intelligence Configuration
-endpoint = "https://ro-doc-intelligence.cognitiveservices.azure.com/"
-key = "xxxxx"
+# Set these in your shell or a .env file (never commit the key):
+#   export AZURE_DOC_INTEL_ENDPOINT="https://ro-doc-intelligence.cognitiveservices.azure.com/"
+#   export AZURE_DOC_INTEL_KEY="..."
+endpoint = os.environ.get(
+    "AZURE_DOC_INTEL_ENDPOINT",
+    "https://ro-doc-intelligence.cognitiveservices.azure.com/"
+)
+key = os.environ.get("AZURE_DOC_INTEL_KEY")
+
+if not key:
+    raise SystemExit(
+        "Set the AZURE_DOC_INTEL_KEY environment variable first."
+    )
 
 client = DocumentIntelligenceClient(
     endpoint=endpoint,
@@ -57,14 +70,38 @@ def analyze_document(file_path):
             f"Document was not found: {file_path.resolve()}"
         )
 
-    with file_path.open("rb") as document_file:
+    # Connection resets and rate limits (HTTP 429) are temporary, so each
+    # file gets three tries before it is reported as a file error.
+    # A wrong key (HTTP 401) is not retried.
+    for attempt in range(1, 4):
+        try:
+            with file_path.open("rb") as document_file:
+                poller = client.begin_analyze_document(
+                    "prebuilt-layout",
+                    body=document_file
+                )
+                return poller.result()
 
-        poller = client.begin_analyze_document(
-            "prebuilt-layout",
-            body=document_file
-        )
+        except Exception as error:  # noqa: BLE001
+            message = str(error)
 
-        return poller.result()
+            # Permanent errors are not retried: a wrong key (401) or a
+            # request Azure refuses (400 InvalidRequest), which on the free
+            # F0 tier usually means the PDF is larger than 4 MB.
+            if attempt == 3 or "401" in message or "InvalidRequest" in message:
+                if "InvalidRequest" in message:
+                    size_mb = file_path.stat().st_size / 1_000_000
+                    raise RuntimeError(
+                        f"Azure rejected the file ({size_mb:.1f} MB). "
+                        "The free Azure tier only accepts files up to 4 MB."
+                    ) from error
+                raise
+
+            print(
+                f"  Retrying {file_path.name} "
+                f"(attempt {attempt + 1} of 3): {message[:80]}"
+            )
+            time.sleep(5 * attempt)
 
 
 def main():

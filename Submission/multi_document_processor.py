@@ -53,6 +53,13 @@ def process_file(
 
     page_records = []
 
+    # Multi-page endorsements: only page 1 carries the
+    # "THIS ENDORSEMENT CHANGES THE POLICY" header, so later pages were
+    # classified OTHER and their wording (completed operations, primary
+    # and non-contributory, exclusions) was lost. Unclassified pages that
+    # follow an endorsement in the same file are now joined to it.
+    open_endorsement = None
+
     for page in result.pages:
 
         page_text = get_page_text(page)
@@ -61,23 +68,57 @@ def process_file(
             page_text
         )
 
+        if (
+            classification["page_type"] == "OTHER"
+            and open_endorsement is not None
+        ):
+            open_endorsement["full_text"] += "\n" + page_text
+            open_endorsement["page_numbers"].append(
+                page.page_number
+            )
+
+            merged_tags = sorted(
+                set(open_endorsement["evidence_tags"])
+                | set(classification["evidence_tags"])
+            )
+            open_endorsement["evidence_tags"] = merged_tags
+
+            open_endorsement["schema"] = build_document_schema(
+                "ENDORSEMENT",
+                open_endorsement["full_text"],
+                merged_tags
+            )
+
+            continue
+
         schema = build_document_schema(
             classification["page_type"],
             page_text,
-            classification["evidence_tags"]
+            classification["evidence_tags"],
+            page=page
         )
 
-        page_records.append({
+        record = {
             "source_file": file_path.name,
             "source_path": str(file_path),
             "page_number": page.page_number,
+            "page_numbers": [page.page_number],
             "page_type":
                 classification["page_type"],
             "evidence_tags":
                 classification["evidence_tags"],
             "schema": schema,
-            "text_preview": page_text[:200]
-        })
+            "text_preview": page_text[:200],
+            "full_text": page_text,
+        }
+
+        page_records.append(record)
+
+        open_endorsement = (
+            record
+            if classification["page_type"] == "ENDORSEMENT"
+            else None
+        )
 
     return page_records
 
