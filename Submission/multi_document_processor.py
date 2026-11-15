@@ -46,79 +46,189 @@ def process_file(
     analyze_document_function
 ):
     """
-    Processes one file and returns one record per page.
+    Processes one file.
+
+    Multi-page endorsements are combined only when the classifier
+    identifies a later page as ENDORSEMENT_CONTINUATION and the
+    immediately preceding open document is an endorsement.
     """
 
-    result = analyze_document_function(file_path)
+    result = analyze_document_function(
+        file_path
+    )
 
     page_records = []
 
-    # Multi-page endorsements: only page 1 carries the
-    # "THIS ENDORSEMENT CHANGES THE POLICY" header, so later pages were
-    # classified OTHER and their wording (completed operations, primary
-    # and non-contributory, exclusions) was lost. Unclassified pages that
-    # follow an endorsement in the same file are now joined to it.
+    # Tracks an endorsement that may continue onto
+    # the following page.
     open_endorsement = None
 
     for page in result.pages:
 
-        page_text = get_page_text(page)
+        page_text = get_page_text(
+            page
+        )
 
         classification = classify_page(
             page_text
         )
 
+        page_type = classification[
+            "page_type"
+        ]
+
+        # -------------------------------------------------
+        # Multi-page endorsement continuation
+        # -------------------------------------------------
+
         if (
-            classification["page_type"] == "OTHER"
+            page_type
+            == "ENDORSEMENT_CONTINUATION"
             and open_endorsement is not None
         ):
-            open_endorsement["full_text"] += "\n" + page_text
-            open_endorsement["page_numbers"].append(
+            open_endorsement[
+                "full_text"
+            ] += "\n" + page_text
+
+            open_endorsement[
+                "page_numbers"
+            ].append(
                 page.page_number
             )
 
             merged_tags = sorted(
-                set(open_endorsement["evidence_tags"])
-                | set(classification["evidence_tags"])
+                set(
+                    open_endorsement[
+                        "evidence_tags"
+                    ]
+                )
+                | set(
+                    classification[
+                        "evidence_tags"
+                    ]
+                )
             )
-            open_endorsement["evidence_tags"] = merged_tags
 
-            open_endorsement["schema"] = build_document_schema(
+            open_endorsement[
+                "evidence_tags"
+            ] = merged_tags
+
+            # Keep a record that this page was classified
+            # as a continuation before being merged.
+            open_endorsement.setdefault(
+                "continuation_pages",
+                []
+            ).append({
+                "page_number":
+                    page.page_number,
+
+                "page_type":
+                    page_type,
+
+                "classification_confidence":
+                    classification.get(
+                        "classification_confidence"
+                    ),
+
+                "classification_reasons":
+                    classification.get(
+                        "classification_reasons",
+                        []
+                    ),
+            })
+
+            # Rebuild the endorsement schema using all
+            # merged page text and evidence.
+            open_endorsement[
+                "schema"
+            ] = build_document_schema(
                 "ENDORSEMENT",
-                open_endorsement["full_text"],
+                open_endorsement[
+                    "full_text"
+                ],
                 merged_tags
             )
 
             continue
 
+        # -------------------------------------------------
+        # Normal standalone page
+        # -------------------------------------------------
+
         schema = build_document_schema(
-            classification["page_type"],
+            page_type,
             page_text,
-            classification["evidence_tags"],
+            classification[
+                "evidence_tags"
+            ],
             page=page
         )
 
         record = {
-            "source_file": file_path.name,
-            "source_path": str(file_path),
-            "page_number": page.page_number,
-            "page_numbers": [page.page_number],
+            "source_file":
+                file_path.name,
+
+            "source_path":
+                str(file_path),
+
+            "page_number":
+                page.page_number,
+
+            "page_numbers": [
+                page.page_number
+            ],
+
             "page_type":
-                classification["page_type"],
+                page_type,
+
+            "classification_confidence":
+                classification.get(
+                    "classification_confidence"
+                ),
+
+            "classification_reasons":
+                classification.get(
+                    "classification_reasons",
+                    []
+                ),
+
+            "revision_indicators":
+                classification.get(
+                    "revision_indicators",
+                    []
+                ),
+
             "evidence_tags":
-                classification["evidence_tags"],
-            "schema": schema,
-            "text_preview": page_text[:200],
-            "full_text": page_text,
+                classification[
+                    "evidence_tags"
+                ],
+
+            "schema":
+                schema,
+
+            "text_preview":
+                page_text[:200],
+
+            "full_text":
+                page_text,
+
+            "continuation_pages": [],
         }
 
-        page_records.append(record)
-
-        open_endorsement = (
+        page_records.append(
             record
-            if classification["page_type"] == "ENDORSEMENT"
-            else None
         )
+
+        # -------------------------------------------------
+        # Decide whether following page may continue
+        # this endorsement
+        # -------------------------------------------------
+
+        if page_type == "ENDORSEMENT":
+            open_endorsement = record
+
+        else:
+            open_endorsement = None
 
     return page_records
 

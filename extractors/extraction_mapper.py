@@ -117,6 +117,50 @@ def clean_value(value):
     return value or None
 
 
+def split_name_and_address(value):
+    """
+    Separates an organization name from obvious address lines while
+    preserving the original extracted block.
+
+    This is intentionally conservative: if no address signal is found,
+    the full value remains the name.
+    """
+    if not value:
+        return {"name": None, "address": None, "raw_value": None}
+
+    lines = normalize_lines(value)
+    if not lines:
+        return {"name": None, "address": None, "raw_value": value}
+
+    address_start = None
+    for index, line in enumerate(lines):
+        upper = line.upper()
+        has_street_number = bool(re.match(r"^\d{1,6}\s+", line))
+        has_city_state_zip = bool(re.search(
+            r"\b[A-Z .'-]+,?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?\b",
+            upper
+        ))
+        if has_street_number or has_city_state_zip:
+            address_start = index
+            break
+
+    if address_start is None:
+        return {
+            "name": clean_value(" ".join(lines)),
+            "address": None,
+            "raw_value": value,
+        }
+
+    name_lines = lines[:address_start]
+    address_lines = lines[address_start:]
+
+    return {
+        "name": clean_value(" ".join(name_lines)) or clean_value(lines[0]),
+        "address": clean_value("\n".join(address_lines)),
+        "raw_value": value,
+    }
+
+
 def collect_lines_between(
     lines,
     start_label,
@@ -688,6 +732,8 @@ def build_endorsement_schema(text, evidence_tags=None):
             primary_matches[0] if primary_matches else None,
         # Every form number seen, including forms the wording only cites.
         "form_numbers_on_page": form_numbers,
+        "detailed_extraction_supported": True,
+        "extraction_status": "EXTRACTED",
     }
 
 
@@ -1141,6 +1187,8 @@ def build_acord25_schema(text, evidence_tags=None, page=None):
 
     coverages = extract_acord_coverages(text)
     insurers = extract_acord_insurers(text)
+    insured_block = extract_acord_named_insured(text)
+    insured_identity = split_name_and_address(insured_block)
 
     if layout:
         coverages = merge_layout_coverages(coverages, layout["coverages"])
@@ -1154,7 +1202,11 @@ def build_acord25_schema(text, evidence_tags=None, page=None):
         "certificate_date":
             extract_certificate_date(text),
         "named_insured":
-            extract_acord_named_insured(text),
+            insured_identity["name"],
+        "insured_address":
+            insured_identity["address"],
+        "named_insured_raw":
+            insured_identity["raw_value"],
         "producer":
             extract_acord_producer(text),
         "insurers": insurers,
@@ -1168,6 +1220,8 @@ def build_acord25_schema(text, evidence_tags=None, page=None):
             extract_form_numbers(description or ""),
         "coverages": coverages,
         "extraction_method": "layout" if layout else "text",
+        "detailed_extraction_supported": True,
+        "extraction_status": "EXTRACTED",
     }
 
 
@@ -1176,10 +1230,48 @@ def build_acord25_schema(text, evidence_tags=None, page=None):
 # =========================================================
 
 def build_acord101_schema(text, evidence_tags=None):
+    """
+    Preserves an ACORD 101 Additional Remarks Schedule. The remarks are
+    supporting statements and should later be linked to a parent ACORD 25.
+    """
     return {
         "document_type": "ACORD_101",
         "evidence_tags": evidence_tags or [],
+        "evidence_status": "SUPPORTING_STATEMENT_ONLY",
         "additional_remarks": clean_value(text),
+        "requires_parent_certificate": True,
+        "detailed_extraction_supported": True,
+        "extraction_status": "EXTRACTED",
+    }
+
+
+# =========================================================
+# GENERIC / UNSUPPORTED DOCUMENT SCHEMA
+# =========================================================
+
+def build_generic_schema(document_type, text, evidence_tags=None):
+    """
+    Preserves a classified page when detailed extraction for that document
+    type has not yet been implemented. Evidence tags remain unverified and
+    are not standalone compliance proof.
+    """
+    raw_text = clean_value(text)
+    review_types = {
+        "CERTIFICATE_EQUIVALENT",
+        "POLICY_EXTRACT",
+        "UNKNOWN",
+        "ENDORSEMENT_CONTINUATION",
+    }
+
+    return {
+        "document_type": document_type,
+        "extraction_status": "BASIC_SCHEMA_ONLY",
+        "detailed_extraction_supported": False,
+        "evidence_tags": evidence_tags or [],
+        "evidence_status": "UNVERIFIED",
+        "requires_review": document_type in review_types,
+        "raw_text": raw_text,
+        "text_preview": raw_text[:500] if raw_text else None,
     }
 
 
@@ -1193,6 +1285,11 @@ def build_document_schema(
     evidence_tags=None,
     page=None
 ):
+    """
+    Routes a classified page to detailed extraction where supported.
+    Unsupported types receive a safe basic schema rather than being forced
+    through the wrong extractor.
+    """
     if document_type == "ACORD_25":
         return build_acord25_schema(
             text,
@@ -1212,8 +1309,8 @@ def build_document_schema(
             evidence_tags
         )
 
-    return {
-        "document_type": document_type,
-        "evidence_tags": evidence_tags or [],
-        "raw_text": clean_value(text),
-    }
+    return build_generic_schema(
+        document_type or "UNKNOWN",
+        text,
+        evidence_tags
+    )
