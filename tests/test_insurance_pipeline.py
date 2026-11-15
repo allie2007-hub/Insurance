@@ -878,3 +878,122 @@ def test_same_folder_alone_does_not_force_association():
         result["status"]
         == "NOT_ASSOCIATED"
     )
+
+
+def test_single_acord_same_pdf_endorsement_without_identity_associates():
+    acord = make_acord_record(
+        source_file="single_package.pdf"
+    )
+
+    endorsement = {
+        "source_file": "single_package.pdf",
+        "page_number": 2,
+        "evidence_tags": [
+            "ADDITIONAL_INSURED",
+        ],
+        "schema": {
+            "document_type": "ENDORSEMENT",
+            "policy_number": None,
+            "named_insured": None,
+            "carrier": None,
+            "form_number": "CG 20 10 07 04",
+            "evidence_tags": [
+                "ADDITIONAL_INSURED",
+            ],
+        },
+    }
+
+    result = associate_batch([
+        acord,
+        endorsement,
+    ])
+
+    assert len(result["submissions"]) == 1
+
+    submission = result["submissions"][0]
+
+    assert len(submission["endorsement_records"]) == 1
+
+    association = submission["association_results"][0]
+
+    assert association["associated"] is True
+
+    assert (
+        association["association_method"]
+        == "SINGLE_ACORD_SAME_PDF_CONTEXT"
+    )
+
+    assert (
+        submission["endorsement_records"][0]["schema"][
+            "association_status"
+        ]
+        == "MATCH"
+    )
+
+def test_identity_missing_endorsement_in_different_pdf_does_not_associate():
+    acord = make_acord_record(
+        source_file="certificate.pdf"
+    )
+
+    endorsement = {
+        "source_file": "unrelated_endorsement.pdf",
+        "page_number": 1,
+        "evidence_tags": [
+            "ADDITIONAL_INSURED",
+        ],
+        "schema": {
+            "document_type": "ENDORSEMENT",
+            "policy_number": None,
+            "named_insured": None,
+            "carrier": None,
+            "form_number": "CG 20 10 07 04",
+            "evidence_tags": [
+                "ADDITIONAL_INSURED",
+            ],
+        },
+    }
+
+    result = associate_batch([
+        acord,
+        endorsement,
+    ])
+
+    acord_submission = [
+        submission
+        for submission in result["submissions"]
+        if submission["group_type"] == "ACORD_BASED"
+    ][0]
+
+    assert len(
+        acord_submission["endorsement_records"]
+    ) == 0
+
+def test_acord101_preserves_additional_remarks():
+    text = (
+        "ACORD 101 ADDITIONAL REMARKS SCHEDULE\n"
+        "R&O Construction Company is included where required "
+        "by written contract."
+    )
+
+    schema = build_document_schema(
+        "ACORD_101",
+        text,
+        ["ADDITIONAL_INSURED"],
+    )
+
+    expected_text = (
+        "ACORD 101 ADDITIONAL REMARKS SCHEDULE "
+        "R&O Construction Company is included where required "
+        "by written contract."
+    )
+
+    assert schema["document_type"] == "ACORD_101"
+    assert schema["additional_remarks"] == expected_text
+    assert schema["raw_text"] == expected_text
+
+    assert (
+        schema["evidence_status"]
+        == "SUPPORTING_STATEMENT_ONLY"
+    )
+
+    assert schema["requires_parent_certificate"] is True

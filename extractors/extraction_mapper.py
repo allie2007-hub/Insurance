@@ -1229,16 +1229,31 @@ def build_acord25_schema(text, evidence_tags=None, page=None):
 # ACORD 101 PLACEHOLDER
 # =========================================================
 
-def build_acord101_schema(text, evidence_tags=None):
+def build_acord101_schema(
+    text,
+    evidence_tags=None
+):
     """
-    Preserves an ACORD 101 Additional Remarks Schedule. The remarks are
-    supporting statements and should later be linked to a parent ACORD 25.
+    Preserves an ACORD 101 Additional Remarks Schedule.
+
+    ACORD 101 text is supplemental certificate information.
+    It can be associated with a parent ACORD 25, but it is not
+    automatically treated as policy endorsement proof.
     """
+
+    raw_text = clean_value(text)
+
     return {
         "document_type": "ACORD_101",
         "evidence_tags": evidence_tags or [],
         "evidence_status": "SUPPORTING_STATEMENT_ONLY",
-        "additional_remarks": clean_value(text),
+        "additional_remarks": raw_text,
+        "raw_text": raw_text,
+        "text_preview": (
+            raw_text[:500]
+            if raw_text
+            else None
+        ),
         "requires_parent_certificate": True,
         "detailed_extraction_supported": True,
         "extraction_status": "EXTRACTED",
