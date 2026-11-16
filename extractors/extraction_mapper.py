@@ -536,7 +536,9 @@ def extract_endorsement_effective_date(text):
 # ---------------------------------------------------------
 
 def _text_has_any(text, phrases):
-    upper = (text or "").upper()
+    # Collapse line breaks and repeated spaces: PDFs split phrases such as
+    # "caused, in / whole or in part" across lines.
+    upper = re.sub(r"\s+", " ", (text or "").upper())
     return any(phrase in upper for phrase in phrases)
 
 
@@ -547,7 +549,7 @@ def extract_endorsement_wording(text, evidence_tags=None):
     policy number, or carrier. Those fields affect document association and
     must remain handled by the existing conservative extractors.
     """
-    upper = (text or "").upper()
+    upper = re.sub(r"[ \t]*\n[ \t]*|[ \t]+", " ", (text or "").upper())
     tags = set(evidence_tags or [])
 
     additional_insured = (
@@ -616,6 +618,24 @@ def extract_endorsement_wording(text, evidence_tags=None):
     )):
         negligence_trigger_status = "CONFIRMED"
     elif "ARISING OUT OF" in upper:
+        # "Arising out of" is the broadest trigger; R&O's AI chart rates
+        # it above "caused in whole or in part" (Platinum vs Gold). It is
+        # not a restriction. Only an AI page with neither phrase is unclear.
+        negligence_trigger_status = "CONFIRMED"
+    elif (
+        additional_insured
+        and (ongoing_operations or completed_operations)
+        and not (
+            # A primary/non-contributory condition (e.g. CG 20 01) refers
+            # to additional insureds but grants nothing itself.
+            primary_confirmed
+            and not _text_has_any(upper, ("WHO IS AN INSURED IS AMENDED",))
+        )
+    ):
+        # Only a page that actually grants AI status for ongoing or
+        # completed operations needs a trigger. Forms that merely mention
+        # an additional insured (e.g. CG 20 01 primary/non-contributory)
+        # do not.
         negligence_trigger_status = "REVIEW"
     else:
         negligence_trigger_status = None
@@ -1168,12 +1188,30 @@ def check_ro_certificate_holder(holder_text):
         RO_HOLDER_NAME.search(text)
         and RO_HOLDER_STREET.search(text)
         and RO_HOLDER_CITY.search(text)
-        and RO_HOLDER_STATE.search(text)
-        and RO_HOLDER_ZIP.search(text)
     ):
+        # R&O labeled certificates with ZIP typos (84044, 84401) as
+        # compliant: name + 933 Wall Ave + Ogden identifies R&O. A wrong
+        # or missing state/ZIP is reported, not failed.
         return "MATCH"
 
     return "MISMATCH"
+
+
+def ro_certificate_holder_note(holder_text):
+    """Explains a MATCH whose state or ZIP differs from UT 84404."""
+
+    if not holder_text:
+        return None
+
+    text = re.sub(r"\s+", " ", holder_text.upper())
+
+    if not RO_HOLDER_ZIP.search(text):
+        return "ZIP code differs from 84404 (likely a typo)"
+
+    if not RO_HOLDER_STATE.search(text):
+        return "State is missing from the holder address"
+
+    return None
 
 
 def extract_description_of_operations(text):
@@ -1453,6 +1491,8 @@ def build_acord25_schema(text, evidence_tags=None, page=None):
         "certificate_holder": certificate_holder,
         "certificate_holder_check":
             check_ro_certificate_holder(certificate_holder),
+        "certificate_holder_note":
+            ro_certificate_holder_note(certificate_holder),
         "description_of_operations": description,
         "project_wording":
             find_named_projects(description),
