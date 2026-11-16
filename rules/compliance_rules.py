@@ -671,29 +671,302 @@ def validate_protected_parties(endorsement_schemas: list[dict[str, Any]], submis
     return _result("PASS", "All configured required protected parties were confirmed", requirement_id="PROTECTED-PARTIES")
 
 
-def validate_additional_insured(endorsement_schemas: list[dict[str, Any]]):
-    eligible, uncertain, _ = _eligible_endorsements(endorsement_schemas)
+# def validate_additional_insured(endorsement_schemas: list[dict[str, Any]]):
+#     eligible, uncertain, _ = _eligible_endorsements(endorsement_schemas)
+#     if uncertain and not eligible:
+#         return _result("REVIEW_REQUIRED", "Additional-insured evidence exists but association is uncertain", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+#     entries = chart_entries(eligible)
+#     tags = endorsement_tags(eligible)
+#     rejected = [e.get("form_number", "unknown") for e in entries if e.get("chart_decision") == "REJECT" and (e.get("ongoing_operations") or e.get("completed_operations"))]
+#     if rejected:
+#         return _result("FAIL", "R&O's approved chart rejects form(s): " + ", ".join(rejected), requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+#     ongoing = [e for e in entries if e.get("ongoing_operations")]
+#     completed = [e for e in entries if e.get("completed_operations")]
+#     if ongoing and completed:
+#         review_forms = [e.get("form_number", "unknown") for e in ongoing + completed if e.get("chart_decision") == "REVIEW" or e.get("completed_operations_conditional")]
+#         if review_forms:
+#             return _result("REVIEW_REQUIRED", "Ongoing and completed operations were found, but limitations require review: " + ", ".join(sorted(set(review_forms))), requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+#         return _result("PASS", "Matching ongoing-operations and completed-operations additional-insured forms were found", requirement_id="AI-ONGOING-COMPLETED")
+#     if ongoing:
+#         return _result("MISSING", "Ongoing-operations endorsement found, but completed-operations evidence is missing", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+#     if completed:
+#         return _result("MISSING", "Completed-operations endorsement found, but ongoing-operations evidence is missing", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+#     if "ADDITIONAL_INSURED" in tags:
+#         return _result("REVIEW_REQUIRED", "Additional-insured wording was found on an uncharted or unconfirmed form; equivalency must be reviewed", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+#     return _result("MISSING", "No matching additional-insured endorsement was associated with this submission", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+
+
+
+def validate_additional_insured(
+    endorsement_schemas: list[dict[str, Any]]
+):
+    eligible, uncertain, _ = _eligible_endorsements(
+        endorsement_schemas
+    )
+
     if uncertain and not eligible:
-        return _result("REVIEW_REQUIRED", "Additional-insured evidence exists but association is uncertain", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+        return _result(
+            "REVIEW_REQUIRED",
+            (
+                "Additional-insured evidence exists, "
+                "but association is uncertain"
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
     entries = chart_entries(eligible)
-    tags = endorsement_tags(eligible)
-    rejected = [e.get("form_number", "unknown") for e in entries if e.get("chart_decision") == "REJECT" and (e.get("ongoing_operations") or e.get("completed_operations"))]
+
+    # -----------------------------------------------------
+    # Route 1: Use R&O's endorsement chart when available
+    # -----------------------------------------------------
+
+    rejected = [
+        entry.get("form_number", "unknown")
+        for entry in entries
+        if (
+            entry.get("chart_decision") == "REJECT"
+            and (
+                entry.get("ongoing_operations")
+                or entry.get("completed_operations")
+            )
+        )
+    ]
+
     if rejected:
-        return _result("FAIL", "R&O's approved chart rejects form(s): " + ", ".join(rejected), requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
-    ongoing = [e for e in entries if e.get("ongoing_operations")]
-    completed = [e for e in entries if e.get("completed_operations")]
-    if ongoing and completed:
-        review_forms = [e.get("form_number", "unknown") for e in ongoing + completed if e.get("chart_decision") == "REVIEW" or e.get("completed_operations_conditional")]
+        return _result(
+            "FAIL",
+            (
+                "R&O's approved chart rejects form(s): "
+                + ", ".join(rejected)
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    chart_ongoing = [
+        entry
+        for entry in entries
+        if entry.get("ongoing_operations")
+    ]
+
+    chart_completed = [
+        entry
+        for entry in entries
+        if entry.get("completed_operations")
+    ]
+
+    if chart_ongoing and chart_completed:
+        review_forms = [
+            entry.get("form_number", "unknown")
+            for entry in chart_ongoing + chart_completed
+            if (
+                entry.get("chart_decision") == "REVIEW"
+                or entry.get(
+                    "completed_operations_conditional"
+                )
+            )
+        ]
+
         if review_forms:
-            return _result("REVIEW_REQUIRED", "Ongoing and completed operations were found, but limitations require review: " + ", ".join(sorted(set(review_forms))), requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
-        return _result("PASS", "Matching ongoing-operations and completed-operations additional-insured forms were found", requirement_id="AI-ONGOING-COMPLETED")
-    if ongoing:
-        return _result("MISSING", "Ongoing-operations endorsement found, but completed-operations evidence is missing", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
-    if completed:
-        return _result("MISSING", "Completed-operations endorsement found, but ongoing-operations evidence is missing", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
-    if "ADDITIONAL_INSURED" in tags:
-        return _result("REVIEW_REQUIRED", "Additional-insured wording was found on an uncharted or unconfirmed form; equivalency must be reviewed", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
-    return _result("MISSING", "No matching additional-insured endorsement was associated with this submission", requirement_id="AI-ONGOING-COMPLETED", severity="HIGH")
+            return _result(
+                "REVIEW_REQUIRED",
+                (
+                    "Ongoing and completed operations were "
+                    "found, but limitations require review: "
+                    + ", ".join(sorted(set(review_forms)))
+                ),
+                requirement_id="AI-ONGOING-COMPLETED",
+                severity="HIGH",
+            )
+
+        return _result(
+            "PASS",
+            (
+                "Matching ongoing-operations and "
+                "completed-operations additional-insured "
+                "forms were found"
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+        )
+
+    # -----------------------------------------------------
+    # Route 2: Read actual endorsement wording
+    # -----------------------------------------------------
+
+    semantic_ai = [
+        schema
+        for schema in eligible
+        if schema.get("additional_insured_status")
+        == "CONFIRMED"
+    ]
+
+    semantic_ongoing = [
+        schema
+        for schema in eligible
+        if (
+            schema.get("additional_insured_status")
+            == "CONFIRMED"
+            and schema.get("ongoing_operations_status")
+            == "CONFIRMED"
+        )
+    ]
+
+    semantic_completed = [
+        schema
+        for schema in eligible
+        if (
+            schema.get("additional_insured_status")
+            == "CONFIRMED"
+            and schema.get("completed_operations_status")
+            == "CONFIRMED"
+        )
+    ]
+
+    semantic_restrictions = sorted({
+        restriction
+        for schema in semantic_ai
+        for restriction in (
+            schema.get("material_restrictions") or []
+        )
+    })
+
+    direct_contract_forms = sorted({
+        schema.get("form_number") or "unknown form"
+        for schema in semantic_ai
+        if schema.get("direct_contract_required") is True
+    })
+
+    uncertain_negligence_forms = sorted({
+        schema.get("form_number") or "unknown form"
+        for schema in semantic_ai
+        if schema.get("negligence_trigger_status")
+        == "REVIEW"
+    })
+
+    # Explicit restrictions must not be ignored merely because
+    # the document contains AI, ongoing, and completed wording.
+    if semantic_restrictions:
+        return _result(
+            "REVIEW_REQUIRED",
+            (
+                "Additional-insured wording confirms ongoing "
+                "and/or completed operations, but material "
+                "restrictions require review: "
+                + "; ".join(semantic_restrictions)
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    if direct_contract_forms:
+        return _result(
+            "REVIEW_REQUIRED",
+            (
+                "Additional-insured wording appears to require "
+                "a direct contract with the protected party: "
+                + ", ".join(direct_contract_forms)
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    if uncertain_negligence_forms:
+        return _result(
+            "REVIEW_REQUIRED",
+            (
+                "Additional-insured negligence-trigger wording "
+                "requires review: "
+                + ", ".join(uncertain_negligence_forms)
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    if semantic_ongoing and semantic_completed:
+        return _result(
+            "PASS",
+            (
+                "Additional-insured wording confirms both "
+                "ongoing operations and completed operations"
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+        )
+
+    if semantic_ongoing:
+        return _result(
+            "MISSING",
+            (
+                "Ongoing-operations additional-insured wording "
+                "was confirmed, but completed-operations "
+                "coverage was not confirmed"
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    if semantic_completed:
+        return _result(
+            "MISSING",
+            (
+                "Completed-operations additional-insured wording "
+                "was confirmed, but ongoing-operations coverage "
+                "was not confirmed"
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    # Preserve the chart-specific incomplete findings.
+    if chart_ongoing:
+        return _result(
+            "MISSING",
+            (
+                "Ongoing-operations endorsement found, but "
+                "completed-operations evidence is missing"
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    if chart_completed:
+        return _result(
+            "MISSING",
+            (
+                "Completed-operations endorsement found, but "
+                "ongoing-operations evidence is missing"
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    if semantic_ai or (
+        "ADDITIONAL_INSURED"
+        in endorsement_tags(eligible)
+    ):
+        return _result(
+            "REVIEW_REQUIRED",
+            (
+                "Additional-insured wording was found, but "
+                "ongoing and completed operations could not "
+                "both be confirmed"
+            ),
+            requirement_id="AI-ONGOING-COMPLETED",
+            severity="HIGH",
+        )
+
+    return _result(
+        "MISSING",
+        (
+            "No matching additional-insured endorsement "
+            "was associated with this submission"
+        ),
+        requirement_id="AI-ONGOING-COMPLETED",
+        severity="HIGH",
+    )
+
+
+
 
 
 def validate_primary_non_contributory(endorsement_schemas: list[dict[str, Any]]):

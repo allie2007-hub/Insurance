@@ -997,3 +997,43 @@ def test_acord101_preserves_additional_remarks():
     )
 
     assert schema["requires_parent_certificate"] is True
+
+
+
+def test_certificate_holder_accepts_greenhome_reading_order():
+    holder = (
+            "R&O Construction\n"
+            "933 Wall Avenue, Ste 2\n"
+            "UT 84404\n"
+            "Ogden,"
+        )
+
+    assert check_ro_certificate_holder(holder) == "MATCH"
+
+def test_certificate_holder_accepts_r_and_o():
+    holder = (
+            "24141646\n"
+            "R AND O CONSTRUCTION\n"
+            "933 WALL AVENUE\n"
+            "OGDEN, UT 84404"
+        )
+
+    assert check_ro_certificate_holder(holder) == "MATCH"
+
+def test_certificate_holder_accepts_zip_plus_four():
+    holder = (
+            "R&O Construction\n"
+            "933 Wall Ave\n"
+            "Ogden, UT 84404-4800"
+        )
+
+    assert check_ro_certificate_holder(holder) == "MATCH"
+
+def test_certificate_holder_rejects_wrong_ro_address():
+    holder = (
+            "R & O Construction\n"
+            "6787 Spencer Street\n"
+            "Las Vegas NV 89119"
+        )
+
+    assert check_ro_certificate_holder(holder) == "MISMATCH"

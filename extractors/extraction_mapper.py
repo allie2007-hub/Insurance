@@ -532,6 +532,217 @@ def extract_endorsement_effective_date(text):
 
 
 # ---------------------------------------------------------
+# Endorsement wording interpretation
+# ---------------------------------------------------------
+
+def _text_has_any(text, phrases):
+    upper = (text or "").upper()
+    return any(phrase in upper for phrase in phrases)
+
+
+def extract_endorsement_wording(text, evidence_tags=None):
+    """Extract coverage meaning without changing association identity fields.
+
+    This helper intentionally does not extract or overwrite named insured,
+    policy number, or carrier. Those fields affect document association and
+    must remain handled by the existing conservative extractors.
+    """
+    upper = (text or "").upper()
+    tags = set(evidence_tags or [])
+
+    additional_insured = (
+        "ADDITIONAL_INSURED" in tags
+        or _text_has_any(upper, (
+            "ADDITIONAL INSURED",
+            "WHO IS AN INSURED IS AMENDED TO INCLUDE",
+            "WHO IS AN INSURED IS AMENDED TO ADD",
+        ))
+    )
+
+    ongoing_operations = (
+        "ONGOING_OPERATIONS" in tags
+        or _text_has_any(upper, (
+            "ONGOING OPERATIONS",
+            "PERFORMANCE OF YOUR ONGOING OPERATIONS",
+        ))
+    )
+
+    completed_operations = (
+        "COMPLETED_OPERATIONS" in tags
+        or _text_has_any(upper, (
+            "PRODUCTS-COMPLETED OPERATIONS HAZARD",
+            "PRODUCTS/COMPLETED OPERATIONS",
+            "COMPLETED OPERATIONS COVERAGE",
+        ))
+    )
+
+    primary_confirmed = _text_has_any(upper, (
+        "PRIMARY AND NONCONTRIBUTORY",
+        "PRIMARY AND NON-CONTRIBUTORY",
+        "THIS INSURANCE IS PRIMARY",
+        "INSURANCE IS PRIMARY TO",
+        "WILL APPLY ON A PRIMARY",
+    ))
+
+    noncontributory_confirmed = _text_has_any(upper, (
+        "NONCONTRIBUTORY",
+        "NON-CONTRIBUTORY",
+        "WILL NOT SEEK CONTRIBUTION",
+        "SHALL NOT SEEK CONTRIBUTION",
+        "NOT SEEK CONTRIBUTION",
+    ))
+
+    written_contract_trigger = bool(re.search(
+        r"(?:REQUIRED|AGREED|OBLIGATED).*?"
+        r"(?:WRITTEN\s+)?(?:CONTRACT|AGREEMENT|PERMIT)",
+        upper,
+        re.DOTALL,
+    ))
+
+    blanket_additional_insured = additional_insured and bool(re.search(
+        r"ANY\s+(?:PERSON|ORGANIZATION|PERSON\s+OR\s+ORGANIZATION)",
+        upper,
+    )) and written_contract_trigger
+
+    direct_contract_required = _text_has_any(upper, (
+        "WITH WHOM YOU HAVE AGREED",
+        "WITH WHOM THE NAMED INSURED HAS AGREED",
+        "DIRECT CONTRACT",
+    ))
+
+    if _text_has_any(upper, (
+        "CAUSED IN WHOLE OR IN PART",
+        "CAUSED, IN WHOLE OR IN PART",
+    )):
+        negligence_trigger_status = "CONFIRMED"
+    elif "ARISING OUT OF" in upper:
+        negligence_trigger_status = "REVIEW"
+    else:
+        negligence_trigger_status = None
+
+    restrictions = []
+
+    # Only treat sole-negligence wording as a restriction when the
+    # nearby wording actually limits additional-insured coverage.
+    sole_negligence_restriction = re.search(
+        r"(?:ADDITIONAL\s+INSURED|INSURANCE\s+AFFORDED)"
+        r".{0,700}"
+        r"(?:SOLE\s+NEGLIGENCE|SOLELY\s+NEGLIGENT)"
+        r"|"
+        r"(?:SOLE\s+NEGLIGENCE|SOLELY\s+NEGLIGENT)"
+        r".{0,700}"
+        r"(?:ADDITIONAL\s+INSURED|INSURANCE\s+AFFORDED)",
+        upper,
+        re.DOTALL,
+    )
+
+    if sole_negligence_restriction:
+        restrictions.append(
+            "Sole-negligence limitation requires review"
+        )
+
+    # A vicarious-liability restriction matters only when it is tied
+    # closely to the additional-insured grant or limitation.
+    vicarious_restriction = re.search(
+        r"(?:ADDITIONAL\s+INSURED|INSURANCE\s+AFFORDED)"
+        r".{0,700}"
+        r"VICARIOUS\s+LIABILITY"
+        r"|"
+        r"VICARIOUS\s+LIABILITY"
+        r".{0,700}"
+        r"(?:ADDITIONAL\s+INSURED|INSURANCE\s+AFFORDED)",
+        upper,
+        re.DOTALL,
+    )
+
+    if vicarious_restriction:
+        restrictions.append(
+            "Vicarious-liability limitation requires review"
+        )
+
+    # Do not connect unrelated appearances of "does not apply" and
+    # "professional". Require actual professional-services exclusion
+    # wording in one local clause.
+    professional_services_exclusion = re.search(
+        r"(?:THIS\s+INSURANCE|COVERAGE|INSURANCE\s+AFFORDED)"
+        r".{0,500}"
+        r"DOES\s+NOT\s+APPLY"
+        r".{0,500}"
+        r"(?:PROFESSIONAL\s+SERVICES|"
+        r"ARCHITECTURAL|ENGINEERING|SURVEYING)"
+        r"|"
+        r"DOES\s+NOT\s+APPLY"
+        r".{0,500}"
+        r"(?:PROFESSIONAL\s+SERVICES|"
+        r"ARCHITECTURAL|ENGINEERING|SURVEYING)",
+        upper,
+        re.DOTALL,
+    )
+
+    if professional_services_exclusion:
+        restrictions.append(
+            "Professional-services exclusion is present"
+        )
+
+    # Only flag voiding language when "void" is locally connected to
+    # additional-insured coverage rather than somewhere else in the policy.
+    void_ai_coverage = re.search(
+        r"(?:ADDITIONAL\s+INSURED)"
+        r".{0,500}"
+        r"(?:VOID|VOIDED)"
+        r"|"
+        r"(?:VOID|VOIDED)"
+        r".{0,500}"
+        r"(?:ADDITIONAL\s+INSURED)",
+        upper,
+        re.DOTALL,
+    )
+
+    if void_ai_coverage:
+        restrictions.append(
+            "Additional-insured coverage may be voided by another form"
+        )
+
+    protected_parties = []
+    if re.search(r"\bR\s*(?:&|AND)\s*O\s+CONSTRUCTION", upper):
+        protected_parties.append("R&O Construction Company")
+    if re.search(r"\bOWNER(?:S)?\b", upper):
+        protected_parties.append("Owner")
+
+    return {
+        "additional_insured_status": (
+            "CONFIRMED" if additional_insured else None
+        ),
+        "ongoing_operations_status": (
+            "CONFIRMED" if ongoing_operations else None
+        ),
+        "completed_operations_status": (
+            "CONFIRMED" if completed_operations else None
+        ),
+        "primary_status": (
+            "CONFIRMED" if primary_confirmed else None
+        ),
+        "noncontributory_status": (
+            "CONFIRMED" if noncontributory_confirmed else None
+        ),
+        "blanket_additional_insured": blanket_additional_insured,
+        "blanket_applies": (
+            True if blanket_additional_insured else None
+        ),
+        "written_contract_trigger": written_contract_trigger,
+        "direct_contract_required": direct_contract_required,
+        "direct_contract_confirmed": (
+            False if not direct_contract_required else None
+        ),
+        "negligence_trigger_status": negligence_trigger_status,
+        "protected_parties": protected_parties,
+        "protected_party_status": None,
+        "material_restrictions": restrictions,
+        "semantic_extraction_method": "ENDORSEMENT_WORDING_RULES_V1",
+    }
+
+
+# ---------------------------------------------------------
 # Endorsement form numbers
 # ---------------------------------------------------------
 
@@ -709,29 +920,30 @@ def build_endorsement_schema(text, evidence_tags=None):
     primary_matches = lookup_form_numbers(
         [primary_form] if primary_form else []
     )
+    wording = extract_endorsement_wording(
+        text,
+        evidence_tags=evidence_tags,
+    )
 
     return {
         "document_type": "ENDORSEMENT",
         "evidence_tags": evidence_tags or [],
-        "named_insured":
-            extract_endorsement_named_insured(text),
-        "carrier":
-            extract_endorsement_carrier(text),
-        "policy_number":
-            extract_endorsement_policy_number(text),
-        "policy_symbol":
-            extract_policy_symbol(text),
+        # Preserve the existing conservative identity extraction. Semantic
+        # wording analysis must not change association identity fields.
+        "named_insured": extract_endorsement_named_insured(text),
+        "carrier": extract_endorsement_carrier(text),
+        "policy_number": extract_endorsement_policy_number(text),
+        "policy_symbol": extract_policy_symbol(text),
         "policy_period": policy_period,
-        "endorsement_number":
-            extract_endorsement_number(text),
+        "endorsement_number": extract_endorsement_number(text),
         "endorsement_effective_date":
             extract_endorsement_effective_date(text),
-        # The endorsement's own form number and R&O's chart entry for it.
         "form_number": primary_form,
-        "ro_chart_entry":
-            primary_matches[0] if primary_matches else None,
-        # Every form number seen, including forms the wording only cites.
+        "ro_chart_entry": (
+            primary_matches[0] if primary_matches else None
+        ),
         "form_numbers_on_page": form_numbers,
+        **wording,
         "detailed_extraction_supported": True,
         "extraction_status": "EXTRACTED",
     }
@@ -908,28 +1120,56 @@ def extract_certificate_date(text):
 
 # R&O's certificate-holder address per the Copilot reviewer
 # instructions and "Insurance Requirements_New MSA's 4.10.24".
-RO_HOLDER_STREET = re.compile(r"\b933\s+WALL\s+(AVENUE|AVE)\b")
-RO_HOLDER_CITY = re.compile(r"\bOGDEN\b[\s,]*\b(UT|UTAH)\b[\s,]*84404\b")
-RO_HOLDER_NAME = re.compile(r"\bR\s*&\s*O\s+CONSTRUCTION\b")
+RO_HOLDER_NAME = re.compile(
+    r"\bR\s*(?:&|AND)\s*O\s+CONSTRUCTION(?:\s+COMPANY)?\b"
+)
+
+RO_HOLDER_STREET = re.compile(
+    r"\b933\s+WALL\s+(?:AVENUE|AVE)\b"
+)
+
+RO_HOLDER_CITY = re.compile(
+    r"\bOGDEN\b"
+)
+
+RO_HOLDER_STATE = re.compile(
+    r"\b(?:UT|UTAH)\b"
+)
+
+RO_HOLDER_ZIP = re.compile(
+    r"\b84404(?:-\d{4})?\b"
+)
 
 
 def check_ro_certificate_holder(holder_text):
     """
-    Compares extracted certificate-holder text with R&O's address.
+    Compares extracted certificate-holder text with R&O's required address.
 
-    Returns "MATCH", "MISMATCH" or None (holder not extracted).
-    Abbreviations, "Suite 2"/"Ste 2" and missing commas are accepted.
+    Reading order does not matter. Azure may return:
+        Ogden, UT 84404
+
+    or:
+        UT 84404
+        Ogden
+
+    Both should match when all required address components are present.
     """
 
     if not holder_text:
         return None
 
-    text = re.sub(r"\s+", " ", holder_text.upper())
+    text = re.sub(
+        r"\s+",
+        " ",
+        holder_text.upper()
+    )
 
     if (
         RO_HOLDER_NAME.search(text)
         and RO_HOLDER_STREET.search(text)
         and RO_HOLDER_CITY.search(text)
+        and RO_HOLDER_STATE.search(text)
+        and RO_HOLDER_ZIP.search(text)
     ):
         return "MATCH"
 

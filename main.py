@@ -349,6 +349,102 @@ def build_acord_package(
         for record in endorsement_records
     ]
 
+    print("\n  DEBUG ENDORSEMENT SEMANTICS")
+
+    for schema in endorsement_schemas:
+        print(
+            f"    Form: "
+            f"{schema.get('form_number') or 'UNKNOWN'}"
+        )
+
+        print(
+            f"      Additional Insured: "
+            f"{schema.get('additional_insured_status')}"
+        )
+
+        print(
+            f"      Ongoing: "
+            f"{schema.get('ongoing_operations_status')}"
+        )
+
+        print(
+            f"      Completed: "
+            f"{schema.get('completed_operations_status')}"
+        )
+
+        print(
+            f"      Primary: "
+            f"{schema.get('primary_status')}"
+        )
+
+        print(
+            f"      Noncontributory: "
+            f"{schema.get('noncontributory_status')}"
+        )
+
+        print(
+            f"      Negligence trigger: "
+            f"{schema.get('negligence_trigger_status')}"
+        )
+
+        print(
+            f"      Direct contract: "
+            f"{schema.get('direct_contract_required')}"
+        )
+
+        print(
+            f"      Restrictions: "
+            f"{schema.get('material_restrictions')}"
+        )
+
+
+        if schema.get("material_restrictions"):
+            matching_record = next(
+                (
+                    record
+                    for record in endorsement_records
+                    if (
+                        (record.get("schema") or {}).get(
+                            "form_number"
+                        )
+                        == schema.get("form_number")
+                    )
+                ),
+                None,
+            )
+
+            if matching_record:
+                text = (
+                    matching_record.get("full_text")
+                    or matching_record.get("raw_text")
+                    or ""
+                )
+
+                print("      RESTRICTION TEXT:")
+
+                upper_text = text.upper()
+
+                for phrase in (
+                    "SOLE NEGLIGENCE",
+                    "PROFESSIONAL",
+                    "ARCHITECTURAL",
+                    "ENGINEERING",
+                    "SURVEYING",
+                ):
+                    position = upper_text.find(phrase)
+
+                    if position >= 0:
+                        start = max(0, position - 500)
+                        end = min(
+                            len(text),
+                            position + 700,
+                        )
+
+                        print(
+                            f"        [{phrase}] "
+                            f"{text[start:end]}"
+                        )
+
     compliance_results = run_compliance_checks(
         acord_schema,
         endorsement_schemas,
@@ -646,7 +742,7 @@ def main():
         )
 
         # For a two-package trial, temporarily uncomment this line.
-        pdf_files = pdf_files[:1]
+        #pdf_files = pdf_files[:1]
 
         print_section(
             f"GROUND-TRUTH GROUP: {label_name}",
