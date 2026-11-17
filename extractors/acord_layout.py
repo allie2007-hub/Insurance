@@ -332,10 +332,49 @@ def _find_label(lines, band, *keys):
     return None
 
 
+def _inline_mark(lines, band, pattern):
+    """
+    Some certificates print the tick as an "X" on the same text line as
+    the label ("CLAIMS-MADE X OCCUR", "POLICY X PRO-JECT"), so there is no
+    separate checkbox or "X" line to find. The X belongs to the label
+    right after it.
+    """
+
+    regex = re.compile(r"(?:^|\s)X\s+(?:" + pattern + r")\b")
+
+    return any(
+        regex.search(line.text.upper())
+        for line in lines
+        if _in_band(line, band)
+    )
+
+
+INLINE_PATTERNS = {
+    "OCCUR": r"OCCUR",
+    "CLAIMSMADE": r"CLAIMS-?\s?MADE",
+    "PRO": r"PRO-?|JECT|PROJECT",
+    "POLICY": r"POLICY",
+    "LOC": r"LOC",
+    "ANYAUTO": r"ANY\s+AUTO",
+    "OWNED": r"(?:ALL\s+)?OWNED",
+    "HIRED": r"HIRED",
+    "NONOWNED": r"NON-?\s?OWNED",
+    "PER": r"PER(?:\s+STATUTE)?",
+}
+
+
 def _checkbox_fields(coverage, band, lines, marks, x_marks):
     def ticked(*keys):
         label = _find_label(lines, band, *keys)
-        return _checked(label, marks, x_marks) if label else None
+        found = _checked(label, marks, x_marks) if label else None
+
+        if found:
+            return True
+
+        if _inline_mark(lines, band, INLINE_PATTERNS.get(keys[0], keys[0])):
+            return True
+
+        return found
 
     if coverage == "general_liability":
         occur = ticked("OCCUR")

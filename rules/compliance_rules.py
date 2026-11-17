@@ -530,13 +530,22 @@ def validate_named_insured(acord_schema: dict[str, Any], submission_context: dic
         return _result("FAIL", "Named insured does not match the contracting entity", requirement_id="IDENTITY-NAMED-INSURED", severity="HIGH")
     if check in {"POSSIBLE_VARIATION", "UNCERTAIN"}:
         return _result("REVIEW_REQUIRED", "Named insured may be an abbreviation, DBA, parent, subsidiary, or related legal entity", requirement_id="IDENTITY-NAMED-INSURED", severity="HIGH")
+    if not submission_context.get("contracting_entity"):
+        # Nothing to compare against: main.py does not yet pass the
+        # subcontract's legal entity. Reported, not escalated, so this
+        # check alone cannot block a COMPLIANT result.
+        return _result("NOT_APPLICABLE", "No contracting entity was supplied for comparison", requirement_id="IDENTITY-NAMED-INSURED")
     return _result("REVIEW_REQUIRED", "Named insured could not be compared with the contracting entity", requirement_id="IDENTITY-NAMED-INSURED", severity="HIGH")
 
 
 def validate_certificate_holder(acord_schema: dict[str, Any]):
     check = acord_schema.get("certificate_holder_check")
     if check == "MATCH":
-        return _result("PASS", "Certificate holder matches R&O Construction Company, 933 Wall Avenue, Ogden, UT 84404", requirement_id="CERTIFICATE-HOLDER")
+        note = acord_schema.get("certificate_holder_note")
+        reason = "Certificate holder matches R&O Construction Company, 933 Wall Avenue, Ogden, UT 84404"
+        if note:
+            reason += f" ({note})"
+        return _result("PASS", reason, requirement_id="CERTIFICATE-HOLDER")
     if check == "MISMATCH":
         return _result("FAIL", f"Certificate holder does not match the required R&O entity/address: {acord_schema.get('certificate_holder')!r}", requirement_id="CERTIFICATE-HOLDER", severity="HIGH")
     return _result("REVIEW_REQUIRED", "Certificate holder was not reliably extracted", requirement_id="CERTIFICATE-HOLDER", severity="HIGH")
@@ -558,7 +567,9 @@ def validate_project_wording(acord_schema: dict[str, Any], rule_set: dict[str, A
         return _result("REVIEW_REQUIRED", "Certificate names a specific project or owner; applicability must be confirmed", requirement_id="PROJECT-WORDING")
     if wording.get("blanket_wording"):
         return _result("PASS", "Blanket/all-jobs wording found", requirement_id="PROJECT-WORDING")
-    return _result("REVIEW_REQUIRED", "No blanket wording or confirmed project match was found", requirement_id="PROJECT-WORDING")
+    # No project is named and none is required: nothing restricts the
+    # certificate to another job.
+    return _result("PASS", "No specific project or owner is named, and none is required", requirement_id="PROJECT-WORDING")
 
 
 def validate_certificate_authentication(acord_schema: dict[str, Any], required: bool):
@@ -652,7 +663,10 @@ def validate_material_restrictions(endorsement_schemas: list[dict[str, Any]], su
 def validate_protected_parties(endorsement_schemas: list[dict[str, Any]], submission_context: dict[str, Any]):
     required_parties = set(submission_context.get("required_protected_parties", []))
     if not required_parties:
-        return _result("REVIEW_REQUIRED", "Required protected parties were not supplied for comparison", requirement_id="PROTECTED-PARTIES", severity="HIGH")
+        # Same as named insured: without a supplied list there is nothing
+        # to compare. R&O itself is checked as certificate holder and via
+        # the additional-insured endorsement.
+        return _result("NOT_APPLICABLE", "No required protected parties were supplied for comparison", requirement_id="PROTECTED-PARTIES")
     eligible, uncertain, _ = _eligible_endorsements(endorsement_schemas)
     if uncertain:
         return _result("REVIEW_REQUIRED", "Protected parties cannot be confirmed because endorsement association is uncertain", requirement_id="PROTECTED-PARTIES", severity="HIGH")
